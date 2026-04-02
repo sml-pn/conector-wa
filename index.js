@@ -7,8 +7,8 @@ const {
     DisconnectReason
 } = require('@whiskeysockets/baileys')
 
-const QRCodeTerminal = require('qrcode-terminal')
 const pino = require('pino')
+const QRCode = require('qrcode')
 
 // FIX FETCH
 const fetch = (...args) =>
@@ -19,14 +19,15 @@ const PORT = process.env.PORT || 3000
 const API_URL = process.env.API_URL
 const API_TOKEN = process.env.API_TOKEN || '123456'
 
-// Segurança contra crash
+// Segurança
 process.on('uncaughtException', console.error)
 process.on('unhandledRejection', console.error)
 
 let sock = null
 let reconnectAttempts = 0
+let currentQR = null
 
-// Servidor HTTP
+// 🌐 ROTAS
 app.get('/', (req, res) => {
     res.send('✅ Conector WhatsApp ONLINE')
 })
@@ -38,6 +39,35 @@ app.get('/health', (req, res) => {
     })
 })
 
+// 🔥 ROTA DO QR
+app.get('/qr', (req, res) => {
+    if (!currentQR) {
+        return res.send('⏳ QR ainda não disponível. Aguarde...')
+    }
+
+    res.send(`
+        <html>
+        <head>
+            <title>QR Code WhatsApp</title>
+        </head>
+        <body style="
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            height:100vh;
+            background:#0f172a;
+            color:white;
+            flex-direction:column;
+            font-family:Arial;
+        ">
+            <h2>📱 Escaneie o QR Code</h2>
+            <img src="${currentQR}" />
+        </body>
+        </html>
+    `)
+})
+
+// 🚀 BOT
 async function start() {
     console.log('🚀 Iniciando bot...')
 
@@ -48,22 +78,25 @@ async function start() {
         auth: state,
         browser: ['Chrome', 'Desktop', '1.0.0'],
         keepAliveIntervalMs: 25000,
-        connectTimeoutMs: 60000
+        connectTimeoutMs: 120000,
+        syncFullHistory: false,
+        markOnlineOnConnect: false
     })
 
-    // Salvar sessão automaticamente (arquivos locais)
     sock.ev.on('creds.update', saveCreds)
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
 
+        // 🔥 GERAR QR COMO IMAGEM
         if (qr) {
-            console.log('📱 Escaneie o QR abaixo:')
-            QRCodeTerminal.generate(qr, { small: true })
+            console.log('📱 QR gerado! Acesse /qr')
+            currentQR = await QRCode.toDataURL(qr)
         }
 
         if (connection === 'open') {
             reconnectAttempts = 0
+            currentQR = null
             console.log('✅ Conectado ao WhatsApp!')
             console.log(`📱 Bot: ${sock.user.id}`)
         }
@@ -85,12 +118,12 @@ async function start() {
                     console.log('❌ Muitas tentativas. Reinicie o serviço.')
                 }
             } else {
-                console.log('❌ Sessão encerrada. Escaneie novamente.')
+                console.log('❌ Sessão encerrada. Acesse /qr para reconectar.')
             }
         }
     })
 
-    // Receber mensagens
+    // 📩 MENSAGENS
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
             const msg = messages[0]
