@@ -8,17 +8,23 @@ const app = express()
 const PORT = process.env.PORT || 3000
 const API_URL = process.env.API_URL || 'https://whatsapp-bot-lin.onrender.com/mensagem'
 
-// Redis (persistência da sessão)
+// Redis
 const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
 
-// Variáveis globais
 let sock = null
 let reconnectAttempts = 0
 let isPairingRequested = false
 let currentQR = null
+
+// Função para limpar sessão corrompida
+async function clearCorruptedSession() {
+    console.log('🧹 Limpando sessão corrompida do Redis...')
+    await redis.del('whatsapp-session')
+    console.log('✅ Sessão corrompida removida.')
+}
 
 // Funções de persistência
 async function saveSession(sessionData) {
@@ -38,12 +44,18 @@ async function loadSession() {
             return JSON.parse(data)
         }
     } catch (err) {
-        console.error('❌ Falha ao carregar sessão:', err.message)
+        console.error('❌ Falha ao carregar sessão (corrompida?):', err.message)
+        await clearCorruptedSession()
     }
     return null
 }
 
-// Rota para exibir QR code (fallback)
+// Rotas HTTP
+app.get('/', (req, res) => res.send('Conector WhatsApp ONLINE 🚀'))
+app.get('/health', (req, res) => {
+    res.json({ status: sock?.user ? 'connected' : 'disconnected', uptime: process.uptime(), reconnectAttempts })
+})
+
 app.get('/qr', async (req, res) => {
     if (!currentQR) {
         return res.send(`
@@ -75,20 +87,10 @@ app.get('/qr', async (req, res) => {
     }
 })
 
-app.get('/', (req, res) => res.send('Conector WhatsApp ONLINE 🚀'))
-app.get('/health', (req, res) => {
-    res.json({
-        status: sock?.user ? 'connected' : 'disconnected',
-        uptime: process.uptime(),
-        reconnectAttempts,
-        pairingRequested: isPairingRequested
-    })
-})
-
-// Função principal
 async function start() {
     console.log('🚀 Iniciando conector...')
 
+    // Tenta carregar a sessão
     const savedSession = await loadSession()
     const { state, saveCreds } = await useMultiFileAuthState('auth_info')
 
@@ -97,14 +99,14 @@ async function start() {
         if (savedSession.keys) state.keys = savedSession.keys
         console.log('🔄 Estado restaurado do Redis')
     } else {
-        console.log('🆕 Nenhuma sessão encontrada. Pairing code será gerado.')
+        console.log('🆕 Nenhuma sessão encontrada. QR será gerado.')
         isPairingRequested = false
     }
 
     sock = makeWASocket({
         logger: Pino({ level: 'silent' }),
         auth: state,
-        browser: ['Chrome (Linux)', 'Desktop', '1.0.0'],
+        browser: ['Windows', 'Chrome', '114.0.5735.198'], // Configuração recomendada
         keepAliveIntervalMs: 30000,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 0,
@@ -112,10 +114,7 @@ async function start() {
     })
 
     sock.ev.on('creds.update', async () => {
-        const fullState = {
-            creds: sock.authState.creds,
-            keys: sock.authState.keys
-        }
+        const fullState = { creds: sock.authState.creds, keys: sock.authState.keys }
         await saveSession(fullState)
         saveCreds()
         console.log('💾 Credenciais atualizadas e salvas')
@@ -124,21 +123,23 @@ async function start() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
 
-        // Atualiza QR code para fallback
         if (qr) {
             currentQR = qr
         }
 
-        // Pairing code
+        // PAREAMENTO (Pairing Code)
         if (connection === 'connecting' && !sock.authState.creds.registered && !isPairingRequested) {
             isPairingRequested = true
             const phoneNumber = process.env.BOT_PHONE_NUMBER || '558596364974'
             console.log(`🔑 Solicitando código de pareamento para ${phoneNumber}...`)
+
+            // Aguarda 5 segundos antes de pedir o código
+            await new Promise(resolve => setTimeout(resolve, 5000))
+
             try {
                 const code = await sock.requestPairingCode(phoneNumber)
                 console.log(`📲 SEU CÓDIGO DE PAREAMENTO: ${code}`)
                 console.log(`👉 Digite esse código no WhatsApp → Aparelhos conectados → Conectar com número de telefone`)
-                // Aguarda 60 segundos antes de permitir nova solicitação
                 setTimeout(() => { isPairingRequested = false }, 60000)
             } catch (err) {
                 console.error('❌ Erro ao solicitar código de pareamento:', err.message)
@@ -166,7 +167,7 @@ async function start() {
             } else if (statusCode === DisconnectReason.loggedOut) {
                 console.log('❌ Desconectado permanentemente. É necessário re-parear.')
                 isPairingRequested = false
-                await redis.del('whatsapp-session')
+                await clearCorruptedSession()
                 setTimeout(start, 5000)
             }
         }
@@ -198,7 +199,6 @@ async function start() {
     })
 }
 
-// Inicia servidor e bot
 app.listen(PORT, () => {
     console.log(`🌐 Servidor HTTP rodando na porta ${PORT}`)
     start()
