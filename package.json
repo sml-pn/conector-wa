@@ -9,6 +9,7 @@
     "@whiskeysockets/baileys": "^6.7.0",
     "@upstash/redis": "^1.28.4",
     "express": "^4.19.2",
-    "pino": "^9.0.0"
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.4"
   }
 }
