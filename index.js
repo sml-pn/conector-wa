@@ -9,9 +9,8 @@ const {
 
 const QRCodeTerminal = require('qrcode-terminal')
 const pino = require('pino')
-const { Redis } = require('@upstash/redis')
 
-// Fix fetch (Node compatível)
+// FIX FETCH
 const fetch = (...args) =>
     import('node-fetch').then(({ default: fetch }) => fetch(...args))
 
@@ -20,18 +19,17 @@ const PORT = process.env.PORT || 3000
 const API_URL = process.env.API_URL
 const API_TOKEN = process.env.API_TOKEN || '123456'
 
-// Redis
-const redis = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN,
-})
-
-// Segurança básica
+// Segurança contra crash
 process.on('uncaughtException', console.error)
 process.on('unhandledRejection', console.error)
 
+let sock = null
+let reconnectAttempts = 0
+
 // Servidor HTTP
-app.get('/', (req, res) => res.send('Conector WhatsApp ONLINE 🚀'))
+app.get('/', (req, res) => {
+    res.send('✅ Conector WhatsApp ONLINE')
+})
 
 app.get('/health', (req, res) => {
     res.json({
@@ -40,44 +38,10 @@ app.get('/health', (req, res) => {
     })
 })
 
-let sock = null
-let reconnectAttempts = 0
-
-// SALVAR sessão
-async function saveSession(session) {
-    try {
-        await redis.set('wa-session', JSON.stringify(session))
-        console.log('✅ Sessão salva no Redis')
-    } catch (err) {
-        console.error('❌ Erro ao salvar sessão:', err.message)
-    }
-}
-
-// CARREGAR sessão
-async function loadSession() {
-    try {
-        const data = await redis.get('wa-session')
-        if (data) {
-            console.log('✅ Sessão carregada do Redis')
-            return JSON.parse(data)
-        }
-    } catch (err) {
-        console.error('❌ Erro ao carregar sessão:', err.message)
-    }
-    return null
-}
-
 async function start() {
     console.log('🚀 Iniciando bot...')
 
-    const saved = await loadSession()
-
     const { state, saveCreds } = await useMultiFileAuthState('auth')
-
-    if (saved) {
-        state.creds = saved.creds
-        state.keys = saved.keys
-    }
 
     sock = makeWASocket({
         logger: pino({ level: 'silent' }),
@@ -87,16 +51,8 @@ async function start() {
         connectTimeoutMs: 60000
     })
 
-    // Salvar sessão sempre que atualizar
-    sock.ev.on('creds.update', async () => {
-        const session = {
-            creds: sock.authState.creds,
-            keys: sock.authState.keys
-        }
-
-        await saveSession(session)
-        await saveCreds()
-    })
+    // Salvar sessão automaticamente (arquivos locais)
+    sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -108,29 +64,33 @@ async function start() {
 
         if (connection === 'open') {
             reconnectAttempts = 0
-            console.log('✅ Conectado com sucesso!')
+            console.log('✅ Conectado ao WhatsApp!')
             console.log(`📱 Bot: ${sock.user.id}`)
         }
 
         if (connection === 'close') {
-            const code = lastDisconnect?.error?.output?.statusCode
+            const statusCode = lastDisconnect?.error?.output?.statusCode
 
             const shouldReconnect =
-                code !== DisconnectReason.loggedOut
+                statusCode !== DisconnectReason.loggedOut
 
             if (shouldReconnect) {
-                const delay = Math.min(5000 * 2 ** reconnectAttempts, 60000)
-                reconnectAttempts++
+                if (reconnectAttempts < 5) {
+                    const delay = Math.min(5000 * 2 ** reconnectAttempts, 60000)
+                    reconnectAttempts++
 
-                console.log(`🔄 Reconectando em ${delay / 1000}s...`)
-                setTimeout(start, delay)
+                    console.log(`🔄 Reconectando em ${delay / 1000}s...`)
+                    setTimeout(start, delay)
+                } else {
+                    console.log('❌ Muitas tentativas. Reinicie o serviço.')
+                }
             } else {
-                console.log('❌ Sessão expirada. Escaneie novamente.')
+                console.log('❌ Sessão encerrada. Escaneie novamente.')
             }
         }
     })
 
-    // RECEBER mensagens
+    // Receber mensagens
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
             const msg = messages[0]
@@ -147,7 +107,7 @@ async function start() {
 
             console.log(`📩 ${jid}: ${text}`)
 
-            // Timeout de 10s
+            // Timeout
             const controller = new AbortController()
             setTimeout(() => controller.abort(), 10000)
 
@@ -172,7 +132,7 @@ async function start() {
 
             console.log('✅ Resposta enviada')
         } catch (err) {
-            console.error('❌ Erro geral:', err.message)
+            console.error('❌ Erro:', err.message)
         }
     })
 }
