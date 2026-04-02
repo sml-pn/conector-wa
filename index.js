@@ -1,17 +1,20 @@
 const express = require('express')
 const app = express()
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
-const QRCode = require('qrcode')
 const pino = require('pino')
 const { Redis } = require('@upstash/redis')
 
 const PORT = process.env.PORT || 3000
 const API_URL = process.env.API_URL || 'https://whatsapp-bot-lin.onrender.com/mensagem'
 
+// Redis
 const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
+
+// Armazenar o QR code temporariamente
+let currentQR = null
 
 async function saveSession(sessionData) {
     try {
@@ -35,6 +38,41 @@ async function loadSession() {
     return null
 }
 
+// Rota para exibir o QR code em HTML
+app.get('/qr', (req, res) => {
+    if (!currentQR) {
+        return res.send(`
+            <html><body>
+                <h1>QR Code não disponível</h1>
+                <p>Aguardando conexão... O QR aparecerá em breve.</p>
+                <meta http-equiv="refresh" content="5">
+            </body></html>
+        `)
+    }
+    // Converte o QR para uma imagem de dados (data URL)
+    const QRCode = require('qrcode')
+    QRCode.toDataURL(currentQR, (err, url) => {
+        if (err) {
+            res.send('Erro ao gerar QR code')
+        } else {
+            res.send(`
+                <html>
+                <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <title>Escaneie o QR Code</title>
+                </head>
+                <body style="text-align:center; font-family:Arial; padding:20px;">
+                    <h2>📱 Escaneie o QR code com o WhatsApp</h2>
+                    <img src="${url}" style="max-width:300px; width:100%; border:1px solid #ccc; border-radius:10px;">
+                    <p>Abra o WhatsApp → Aparelhos conectados → Conectar um aparelho</p>
+                    <p><small>Este QR é válido por alguns minutos. Se expirar, recarregue a página.</small></p>
+                </body>
+                </html>
+            `)
+        }
+    })
+})
+
 app.get('/', (req, res) => res.send('Conector WhatsApp ONLINE 🚀'))
 app.get('/health', (req, res) => {
     res.json({
@@ -45,20 +83,6 @@ app.get('/health', (req, res) => {
 
 let sock = null
 let reconnectAttempts = 0
-
-async function gerarEExibirQR(qrData) {
-    // Tenta gerar QR no terminal (compacto)
-    try {
-        const qrImage = await QRCode.toString(qrData, { type: 'terminal', small: true })
-        console.log('📱 QR Code (escaneie com WhatsApp):')
-        console.log(qrImage)
-    } catch (err) {
-        console.error('Erro ao gerar QR:', err.message)
-    }
-    // Fallback: exibe link para gerar QR online
-    const encodedQR = encodeURIComponent(qrData)
-    console.log(`🔗 Caso o QR não apareça, acesse: https://quickchart.io/qr?text=${encodedQR}&size=300`)
-}
 
 async function start() {
     console.log('🚀 Iniciando conector...')
@@ -93,18 +117,19 @@ async function start() {
         console.log('💾 Credenciais salvas')
     })
 
-    sock.ev.on('connection.update', async (update) => {
+    sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update
 
         if (qr) {
-            console.log('📡 QR recebido, gerando imagem...')
-            await gerarEExibirQR(qr)
+            console.log('📱 QR code recebido! Acesse /qr para escanear.')
+            currentQR = qr
         }
 
         if (connection === 'open') {
             reconnectAttempts = 0
             console.log('✅ Conectado ao WhatsApp!')
             console.log(`📱 Número do BOT: ${sock.user.id}`)
+            currentQR = null // limpa QR após conexão
         }
 
         if (connection === 'close') {
