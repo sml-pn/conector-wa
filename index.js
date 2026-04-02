@@ -8,13 +8,12 @@ const { Redis } = require('@upstash/redis')
 const PORT = process.env.PORT || 3000
 const API_URL = process.env.API_URL || 'https://whatsapp-bot-lin.onrender.com/mensagem'
 
-// Configurar Redis
+// Redis
 const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
 })
 
-// Funções de persistência
 async function saveSession(sessionData) {
     try {
         await redis.set('whatsapp-session', JSON.stringify(sessionData))
@@ -37,7 +36,6 @@ async function loadSession() {
     return null
 }
 
-// Servidor HTTP
 app.get('/', (req, res) => res.send('Conector WhatsApp ONLINE 🚀'))
 app.get('/health', (req, res) => {
     res.json({
@@ -49,23 +47,10 @@ app.get('/health', (req, res) => {
 let sock = null
 let reconnectAttempts = 0
 
-// Função para gerar QR manualmente (forçado)
-function gerarQR(qr) {
-    console.log('📱 QR Code gerado! Escaneie com o WhatsApp:')
-    QRCodeTerminal.generate(qr, { small: true })
-}
-
 async function start() {
     console.log('🚀 Iniciando conector...')
 
-    // Log para verificar se Redis está configurado
-    if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-        console.error('❌ Redis não configurado! Verifique as variáveis de ambiente.')
-    }
-
-    // Carregar sessão salva
     const savedSession = await loadSession()
-
     const { state, saveCreds } = await useMultiFileAuthState('auth_info')
 
     if (savedSession) {
@@ -73,7 +58,7 @@ async function start() {
         if (savedSession.keys) state.keys = savedSession.keys
         console.log('🔄 Estado restaurado do Redis')
     } else {
-        console.log('🆕 Nenhuma sessão encontrada. Será gerado um novo QR code.')
+        console.log('🆕 Nenhuma sessão encontrada. QR será gerado.')
     }
 
     sock = makeWASocket({
@@ -83,7 +68,7 @@ async function start() {
         keepAliveIntervalMs: 25000,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 0,
-        printQRInTerminal: true  // força QR no terminal se não houver sessão
+        // NÃO use printQRInTerminal
     })
 
     sock.ev.on('creds.update', async () => {
@@ -93,15 +78,16 @@ async function start() {
         }
         await saveSession(fullState)
         saveCreds()
-        console.log('💾 Credenciais atualizadas e salvas')
+        console.log('💾 Credenciais salvas')
     })
 
     sock.ev.on('connection.update', (update) => {
-        console.log('📡 Update recebido:', Object.keys(update).join(', '))
         const { connection, lastDisconnect, qr } = update
 
+        // 🔥 Gera QR se existir
         if (qr) {
-            gerarQR(qr)
+            console.log('📱 QR Code recebido! Escaneie com WhatsApp:')
+            QRCodeTerminal.generate(qr, { small: true })
         }
 
         if (connection === 'open') {
@@ -150,7 +136,6 @@ async function start() {
     })
 }
 
-// Inicia servidor e bot
 app.listen(PORT, () => {
     console.log(`🌐 Servidor HTTP rodando na porta ${PORT}`)
     start()
