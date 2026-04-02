@@ -1,14 +1,13 @@
 const express = require('express')
 const app = express()
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
-const QRCodeTerminal = require('qrcode-terminal')
+const QRCode = require('qrcode')
 const pino = require('pino')
 const { Redis } = require('@upstash/redis')
 
 const PORT = process.env.PORT || 3000
 const API_URL = process.env.API_URL || 'https://whatsapp-bot-lin.onrender.com/mensagem'
 
-// Redis
 const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
@@ -47,6 +46,20 @@ app.get('/health', (req, res) => {
 let sock = null
 let reconnectAttempts = 0
 
+async function gerarEExibirQR(qrData) {
+    // Tenta gerar QR no terminal (compacto)
+    try {
+        const qrImage = await QRCode.toString(qrData, { type: 'terminal', small: true })
+        console.log('📱 QR Code (escaneie com WhatsApp):')
+        console.log(qrImage)
+    } catch (err) {
+        console.error('Erro ao gerar QR:', err.message)
+    }
+    // Fallback: exibe link para gerar QR online
+    const encodedQR = encodeURIComponent(qrData)
+    console.log(`🔗 Caso o QR não apareça, acesse: https://quickchart.io/qr?text=${encodedQR}&size=300`)
+}
+
 async function start() {
     console.log('🚀 Iniciando conector...')
 
@@ -67,8 +80,7 @@ async function start() {
         browser: ['Chrome (Linux)', 'Desktop', '1.0.0'],
         keepAliveIntervalMs: 25000,
         connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 0,
-        // NÃO use printQRInTerminal
+        defaultQueryTimeoutMs: 0
     })
 
     sock.ev.on('creds.update', async () => {
@@ -81,13 +93,12 @@ async function start() {
         console.log('💾 Credenciais salvas')
     })
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
 
-        // 🔥 Gera QR se existir
         if (qr) {
-            console.log('📱 QR Code recebido! Escaneie com WhatsApp:')
-            QRCodeTerminal.generate(qr, { small: true })
+            console.log('📡 QR recebido, gerando imagem...')
+            await gerarEExibirQR(qr)
         }
 
         if (connection === 'open') {
