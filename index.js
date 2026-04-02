@@ -10,64 +10,56 @@ const {
 const pino = require('pino')
 const QRCode = require('qrcode')
 
-// FIX FETCH
-const fetch = (...args) =>
-    import('node-fetch').then(({ default: fetch }) => fetch(...args))
+// Node 18+ já tem fetch
+const fetch = global.fetch
 
-// ENV
 const PORT = process.env.PORT || 3000
-const API_URL = process.env.API_URL
-const API_TOKEN = process.env.API_TOKEN || '123456'
-
-// Segurança
-process.on('uncaughtException', console.error)
-process.on('unhandledRejection', console.error)
 
 let sock = null
 let reconnectAttempts = 0
 let currentQR = null
 
-// 🌐 ROTAS
+// 🔥 PING (anti sleep)
+const SELF_URL = process.env.SELF_URL
+
+setInterval(async () => {
+    try {
+        if (SELF_URL) {
+            await fetch(SELF_URL)
+            console.log('🔄 Ping enviado')
+        }
+    } catch (err) {
+        console.log('⚠️ Falha no ping')
+    }
+}, 5 * 60 * 1000) // 5 minutos
+
+// ROTAS
 app.get('/', (req, res) => {
-    res.send('✅ Conector WhatsApp ONLINE')
+    res.send('✅ ONLINE')
 })
 
 app.get('/health', (req, res) => {
     res.json({
-        status: sock?.user ? 'connected' : 'disconnected',
-        uptime: process.uptime()
+        status: sock?.user ? 'connected' : 'disconnected'
     })
 })
 
-// 🔥 ROTA DO QR
+// QR VIA LINK
 app.get('/qr', (req, res) => {
     if (!currentQR) {
-        return res.send('⏳ QR ainda não disponível. Aguarde...')
+        return res.send('⏳ Aguarde QR...')
     }
 
     res.send(`
-        <html>
-        <head>
-            <title>QR Code WhatsApp</title>
-        </head>
-        <body style="
-            display:flex;
-            justify-content:center;
-            align-items:center;
-            height:100vh;
-            background:#0f172a;
-            color:white;
-            flex-direction:column;
-            font-family:Arial;
-        ">
-            <h2>📱 Escaneie o QR Code</h2>
-            <img src="${currentQR}" />
-        </body>
-        </html>
+    <html>
+    <body style="display:flex;justify-content:center;align-items:center;height:100vh;background:#111;color:#fff;flex-direction:column;">
+        <h2>Escaneie o QR</h2>
+        <img src="${currentQR}" />
+    </body>
+    </html>
     `)
 })
 
-// 🚀 BOT
 async function start() {
     console.log('🚀 Iniciando bot...')
 
@@ -77,10 +69,9 @@ async function start() {
         logger: pino({ level: 'silent' }),
         auth: state,
         browser: ['Chrome', 'Desktop', '1.0.0'],
-        keepAliveIntervalMs: 25000,
+        keepAliveIntervalMs: 30000,
         connectTimeoutMs: 120000,
-        syncFullHistory: false,
-        markOnlineOnConnect: false
+        syncFullHistory: false
     })
 
     sock.ev.on('creds.update', saveCreds)
@@ -88,84 +79,34 @@ async function start() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
 
-        // 🔥 GERAR QR COMO IMAGEM
         if (qr) {
-            console.log('📱 QR gerado! Acesse /qr')
+            console.log('📱 QR disponível em /qr')
             currentQR = await QRCode.toDataURL(qr)
         }
 
         if (connection === 'open') {
             reconnectAttempts = 0
             currentQR = null
-            console.log('✅ Conectado ao WhatsApp!')
-            console.log(`📱 Bot: ${sock.user.id}`)
+            console.log('✅ Conectado!')
         }
 
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode
-
             const shouldReconnect =
-                statusCode !== DisconnectReason.loggedOut
+                lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
 
             if (shouldReconnect) {
                 if (reconnectAttempts < 5) {
-                    const delay = Math.min(5000 * 2 ** reconnectAttempts, 60000)
                     reconnectAttempts++
+                    const delay = Math.min(5000 * 2 ** reconnectAttempts, 60000)
 
-                    console.log(`🔄 Reconectando em ${delay / 1000}s...`)
+                    console.log(`🔄 Tentando reconectar em ${delay / 1000}s...`)
                     setTimeout(start, delay)
                 } else {
-                    console.log('❌ Muitas tentativas. Reinicie o serviço.')
+                    console.log('❌ Muitas tentativas. Aguarde novo deploy.')
                 }
             } else {
-                console.log('❌ Sessão encerrada. Acesse /qr para reconectar.')
+                console.log('❌ Sessão expirada. Acesse /qr')
             }
-        }
-    })
-
-    // 📩 MENSAGENS
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        try {
-            const msg = messages[0]
-
-            if (!msg.message || msg.key.fromMe) return
-
-            const jid = msg.key.remoteJid
-
-            const text =
-                msg.message.conversation ||
-                msg.message.extendedTextMessage?.text
-
-            if (!text) return
-
-            console.log(`📩 ${jid}: ${text}`)
-
-            // Timeout
-            const controller = new AbortController()
-            setTimeout(() => controller.abort(), 10000)
-
-            const response = await fetch(API_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${API_TOKEN}`
-                },
-                body: JSON.stringify({
-                    from: jid,
-                    texto: text
-                }),
-                signal: controller.signal
-            })
-
-            const data = await response.json()
-
-            await sock.sendMessage(jid, {
-                text: data.resposta || 'Erro ao responder'
-            })
-
-            console.log('✅ Resposta enviada')
-        } catch (err) {
-            console.error('❌ Erro:', err.message)
         }
     })
 }
