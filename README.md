@@ -37,4 +37,4 @@ Caso queira alterar para qual empresa o bot responde, edite o arquivo **`.env`**
 
 ---
 
-Desenvolvido com 💪 para você.
+Desenvolvido com 💪 SML_PN
